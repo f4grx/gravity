@@ -65,7 +65,7 @@ int sim_done(struct state *dest) {
 }
 
 /*---------------------------------------------------------------------------*/
-int sim_add_body(struct state *dest, char *name, double mass, double radius) {
+int sim_body_add(struct state *dest, char *name, double mass, double radius) {
     dest->bodies = realloc(dest->bodies, sizeof(struct body) * (dest->bcount+1));
     if(dest->bodies) {
         memset(&dest->bodies[dest->bcount], 0, sizeof(struct body));
@@ -77,6 +77,17 @@ int sim_add_body(struct state *dest, char *name, double mass, double radius) {
         return 0;
     }
     return 1; //failed
+}
+
+/*---------------------------------------------------------------------------*/
+struct body *sim_body_find(struct state *dest, char *name) {
+    int i;
+    for(i=0;i<dest->bcount;i++) {
+        if(!strcmp(dest->bodies[i].name, name)) {
+            return &dest->bodies[i];
+        }
+    }
+    return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -96,6 +107,10 @@ int parse_planet(struct state *dest, char *buf) {
     char *name,*ebuf;
     name = buf;
     printf("PLANET =>%s\n",buf);
+    if(!*buf) {
+        printf("missing planet name");
+        return 1;
+    }
     //find name end
     while(*buf && *buf !=0x20) {
         buf += 1;
@@ -127,16 +142,22 @@ int parse_planet(struct state *dest, char *buf) {
         printf("warning: spurious planet info: %s\n",buf);
     }
 
-    return sim_add_body(dest,name,m,r);
+    return sim_body_add(dest,name,m,r);
 }
 
 /*---------------------------------------------------------------------------*/
 //[ship] name mass radius [around] planet alt angle
 int parse_ship(struct state *dest, char *buf) {
     double m,r;
-    char *name,*ebuf;
-    name = buf;
+    char *ship,*name,*ebuf;
+    int ret;
+
+    ship = buf;
     printf("SHIP =>%s\n",buf);
+    if(!*buf) {
+        printf("missing ship name");
+        return 1;
+    }
     //find name end
     while(*buf && *buf !=0x20) {
         buf += 1;
@@ -159,22 +180,117 @@ int parse_ship(struct state *dest, char *buf) {
         printf("missing ship radius");
         return 1;
     }
-    r=strtod(buf,&ebuf);
+    r = strtod(buf,&ebuf);
     buf = ebuf;
     while(*buf && *buf==0x20) {
         buf += 1;
     }
+    ret = sim_body_add(dest,ship,m,r);
+    if(ret) {
+        printf("failed to add body %s\n", name);
+        return 1;
+    }
+
+    //parse 'around' alt angle
+    if(!*buf) {
+        printf("missing ship pos method");
+        return 1;
+    }
+    name = buf;
+    while(*buf && *buf!=0x20) {
+        buf += 1;
+    }
+    ebuf = buf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    *ebuf = 0;
+    printf("pos method -> %s\n", name);
+
+    if(!strcmp(name,"around")) {
+        struct body *ref,*bship;
+        double rad;
+        if(!*buf) {
+            printf("missing body around to position");
+            return 1;
+        }
+        name = buf;
+        while(*buf && *buf!=0x20) {
+            buf += 1;
+        }
+        ebuf = buf;
+        while(*buf && *buf==0x20) {
+            buf += 1;
+        }
+        if(!*buf) {
+            printf("missing altitude around body");
+            return 1;
+        }
+        *ebuf = 0;
+        printf("pos ship around body: %s\n",name);
+        ref = sim_body_find(dest,name);
+        if(!ref) {
+            printf("cannot find ref body: %s\n",name);
+            return 1;
+        }
+        rad = strtod(buf,&ebuf);
+        buf = ebuf;
+        while(*buf && *buf==0x20) {
+            buf += 1;
+        }
+        printf("at altitude %g\n",rad);
+        rad += ref->radius;
+        if(!*buf) {
+            printf("missing angle around body");
+            return 1;
+        }
+        r = strtod(buf,&ebuf);
+        buf = ebuf;
+        while(*buf && *buf==0x20) {
+            buf += 1;
+        }
+        bship = sim_body_find(dest,ship);
+        bship->rx = ref->rx + rad * cos(r * M_PI / 180);
+        bship->ry = ref->ry + rad * sin(r * M_PI / 180);
+        printf("ship pos x=%g, y=%g\n",bship->rx, bship->ry);
+    }
+
     if(*buf) {
         printf("warning: spurious ship info: %s\n",buf);
     }
 
-    return sim_add_body(dest,name,m,r);
+    return 0;
 }
 
 /*---------------------------------------------------------------------------*/
 //[sim] timestep duration
 int parse_sim(struct state *dest, char *buf) {
+    double t,d;
+    char *ebuf;
     printf("SIM =>%s\n",buf);
+    if(!*buf) {
+        printf("missing timestep");
+        return 1;
+    }
+    t=strtod(buf,&ebuf);
+    buf = ebuf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    if(!*buf) {
+        printf("missing duration");
+        return 1;
+    }
+    d=strtod(buf,&ebuf);
+    buf = ebuf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    if(*buf) {
+        printf("warning: spurious sim info: %s\n",buf);
+    }
+    dest->dt = t;
+    dest->tmax = d;
     return 0;
 }
 
@@ -265,7 +381,7 @@ int parse(struct state *dest, const char *fname) {
     }
 
     fclose(f);
-    printf("done\n");
+    printf("config done\n");
     return 0;
 }
 
