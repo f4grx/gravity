@@ -28,7 +28,7 @@ const struct body iss = {
     417289,     //417T
     110,        //largest dimension 110m
     0, 325000+earth.radius,  //325km alt MSL
-    6666, 0,    //27600km/h = 7666m/s
+    7666, 0,    //27600km/h = 7666m/s
 };
 
 struct body bodies[2];

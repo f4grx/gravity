@@ -7,3 +7,6 @@ ship iss 417289 110 around earth 325000 0
 #[sim] timestep duration
 sim 1e-3 8000
 
+#[plot] body param ref
+plot iss pos earth
+
