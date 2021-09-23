@@ -7,54 +7,92 @@
 struct body {
     double mass;    //kilograms
     double radius;  //meters, circular body
-    double pos_x;   // meters
-    double pos_y;   // meters
-    double speed_x; // m/sec
-    double speed_y; // m/sec
-    double accel_x;
-    double accel_y;
+    double rx,ry;   //pos in meters
+    double vx,vy;   //speed in m/sec
+    double ax,ay;   //accels in m/sec^2
 };
 
-// fixed earth
-const struct body earth = {
-    5.97237E24, //mass in kg
-    6.371E6,    //radius in m
-    0,0,        //pos
-    0,0,        //speed
+struct state {
+    struct body   *bodies;
+    int           bcount;
+    double        t;
+    unsigned long steps;
 };
 
-//iss (approximate)
-const struct body iss = {
-    417289,     //417T
-    110,        //largest dimension 110m
-    0, 325000+earth.radius,  //325km alt MSL
-    6666, 0,    //27600km/h = 7666m/s
-};
-
-struct body bodies[2];
-#define central 0
-#define sat 1
+struct state sim;
 
 #define G 6.6743015E-11
 
 #define dt 1e-3
 #define time 8000
 
+//[planet] name mass radius pos
+int parse_planet(struct state *dest, char *buf) {
+    printf("PLANET =>%s\n",buf);
+    return 0;
+}
 
-int main(int argc, char **argv) {
+//[ship] name mass radius [around] planet alt angle
+int parse_ship(struct state *dest, char *buf) {
+    printf("SHIP =>%s\n",buf);
+    return 0;
+}
+
+//[sim] timestep duration
+int parse_sim(struct state *dest, char *buf) {
+    printf("SIM =>%s\n",buf);
+    return 0;
+}
+
+//[plot] body param ref
+int parse_plot(struct state *dest, char *buf) {
+    printf("PLOT =>%s\n",buf);
+    return 0;
+}
+
+int parse_line(struct state *dest, char *buf) {
+    char *inst;
+
+    inst = buf;
+
+    //skip all until spaces
+    while(*buf && *buf !=0x20) {
+        buf += 1;
+    }
+    if(*buf) { //not end of line
+        *buf = 0; //cut instruction
+        buf += 1; //skip after
+        //skip all spaces
+        while(*buf && *buf ==0x20) {
+            buf += 1;
+        }
+    }
+
+    if(!strcmp(inst,"planet")) {
+        return parse_planet(dest, buf);
+    } else if(!strcmp(inst,"ship")) {
+        return parse_ship(dest, buf);
+    } else if(!strcmp(inst,"sim")) {
+        return parse_sim(dest, buf);
+    } else if(!strcmp(inst,"plot")) {
+        return parse_plot(dest, buf);
+    } else {
+        printf("unknown command : %s\n", inst);
+        printf("params: %s\n", buf);
+    }
+    return 1;
+}
+
+int parse(struct state *dest, const char *fname) {
     FILE *f;
     char buf[256];
     char *ptr;
     int len;
+    int ret;
 
-    if(argc != 2) {
-        printf("%s <simfile>\n", argv[0]);
-        return 1;
-    }
-
-    f = fopen(argv[1], "rb");
+    f = fopen(fname, "rb");
     if(!f) {
-        printf("cant open: %s\n", argv[1]);
+        printf("cant open: %s\n", fname);
         return 1;
     }
 
@@ -83,7 +121,10 @@ int main(int argc, char **argv) {
         if(ptr[0]=='#') {
             continue;
         }
-        printf("->[%s]\n",ptr);
+        ret = parse_line(dest,ptr);
+        if(ret) {
+            break;
+        }
     }
 
     fclose(f);
@@ -91,6 +132,15 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+int main(int argc, char **argv) {
+    if(argc != 2) {
+        printf("%s <simfile>\n", argv[0]);
+        return 1;
+    }
+    parse(&sim, argv[1]);
+}
+
+#if 0
 int sim() {
     double t=0;
     unsigned long i = 0;
@@ -187,4 +237,5 @@ again:
     if(t < time) goto again;
     
 }
+#endif
 
