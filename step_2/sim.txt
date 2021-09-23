@@ -1,0 +1,9 @@
+#[planet] name mass radius pos
+planet earth 5.97237E24 6.371E6 0 0
+
+#[ship] name mass radius [around] planet alt angle
+ship iss 417289 110 around earth 325000 0
+
+#[sim] timestep duration
+sim 1e-3 8000
+
