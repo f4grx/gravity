@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 
 /*2d gravity*/
 
@@ -682,7 +683,28 @@ int parse(struct state *dest, const char *fname) {
 }
 
 /*---------------------------------------------------------------------------*/
+/**
+ * https://gist.github.com/diabloneo/9619917
+ * @fn timespec_diff(struct timespec *, struct timespec *, struct timespec *)
+ * @brief Compute the diff of two timespecs, that is a - b = result.
+ * @param a the minuend
+ * @param b the subtrahend
+ * @param result a - b
+ */
+static inline void timespec_diff(struct timespec *a, struct timespec *b,
+    struct timespec *result) {
+    result->tv_sec  = a->tv_sec  - b->tv_sec;
+    result->tv_nsec = a->tv_nsec - b->tv_nsec;
+    if (result->tv_nsec < 0) {
+        --result->tv_sec;
+        result->tv_nsec += 1000000000L;
+    }
+}
+
+/*---------------------------------------------------------------------------*/
 int main(int argc, char **argv) {
+    struct timespec prev,now,diff;
+
     if(argc != 2) {
         printf("%s <simfile>\n", argv[0]);
         return 1;
@@ -698,12 +720,23 @@ int main(int argc, char **argv) {
 
     printf("simulation start\n");
     sim_start(&sim);
+    clock_gettime(CLOCK_REALTIME, &prev);
     while(!sim_done(&sim)) {
         sim_run(&sim);
         sim_plots(&sim);
+
+        clock_gettime(CLOCK_REALTIME, &now);
+        timespec_diff(&now,&prev,&diff);
+        //printf("%lu %lu\n",diff.tv_sec, diff.tv_nsec);
+        if(diff.tv_nsec > 250L*1000L*1000L) {
+            printf("steps %ld time %g\r",sim.steps, sim.t);
+            fflush(stdout);
+            memcpy(&prev,&now,sizeof(struct timespec));
+        }
     }
+    printf("steps %ld time %g\r",sim.steps, sim.t);
     sim_end(&sim);
-    printf("simulation done\n");
+    printf("\nsimulation done\n");
     return 0;
 }
 
