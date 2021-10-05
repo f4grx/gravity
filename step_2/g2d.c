@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -92,7 +93,57 @@ struct body *sim_body_find(struct state *dest, char *name) {
 
 /*---------------------------------------------------------------------------*/
 int sim_run(struct state *s) {
+    uint32_t u,v;
+    double dx,dy,d2,d,f;
+
     printf("[%lu] %g\n", s->steps, s->t);
+
+    //compute forces on each body
+    for(u = 0; u < s->bcount; u++) {
+        //printf("gravitational forces on body %d\n",u);
+        s->bodies[u].ax = 0;
+        s->bodies[u].ay = 0;
+
+        for(v = 0; v < s->bcount; v++) {
+            if(v==u) continue;
+            dx = s->bodies[v].rx - s->bodies[u].rx;
+            dy = s->bodies[v].ry - s->bodies[u].ry;
+            d2 = dx*dx + dy*dy;
+            d = sqrt(d2);
+            f  = G * s->bodies[u].mass * s->bodies[v].mass / d2;
+            //direction from v to u (normalized vector)
+            dx = dx / d;
+            dy = dy / d;
+            //acceleration from v to u
+            dx = dx * f / s->bodies[u].mass;
+            dy = dy * f / s->bodies[u].mass;
+            //printf(" from body %d dist=%g m, f=%g N ax=%g ay=%g\n",v,d,f,dx,dy);
+            s->bodies[u].ax += dx;
+            s->bodies[u].ay += dy;
+        }
+    }
+    //integrate
+    for(u = 0; u < s->bcount; u++) {
+        s->bodies[u].vx += s->bodies[u].ax * s->dt;
+        s->bodies[u].vy += s->bodies[u].ay * s->dt;
+        s->bodies[u].rx += s->bodies[u].vx * s->dt;
+        s->bodies[u].ry += s->bodies[u].vy * s->dt;
+    }
+
+    //detect collisions
+    for(u = 0; u < s->bcount; u++) {
+        for(v = u+1; v < s->bcount; v++) {
+            dx = s->bodies[v].rx - s->bodies[u].rx;
+            dy = s->bodies[v].ry - s->bodies[u].ry;
+            d2 = dx*dx + dy*dy;
+            d = sqrt(d2);
+            if(d < (s->bodies[u].radius + s->bodies[v].radius)) {
+                printf("collision!\n");
+                s->t = s->tmax;
+            }
+        }
+    }
+
 
     //do it
     s->t += s->dt;
