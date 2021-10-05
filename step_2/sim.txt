@@ -1,12 +1,11 @@
 #[planet] name mass radius pos
 planet earth 5.97237E24 6.371E6 0 0
    
-  #[ship] name mass radius [around] planet alt angle
-ship iss 417289 110 around earth 325000 0
+  #[ship] name mass radius [around] planet alt angle orbspeed
+ship iss 417289 110 around earth 325000 0 7700
 
 #[sim] timestep duration
 sim 1e-3 8000
 
-#[plot] body param ref
-plot iss pos earth
-
+#[plot] file body ref nthstep param ... [pos,vel,acc,orb]
+plot grav.csv iss earth 10 pos orb

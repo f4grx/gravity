@@ -16,6 +16,20 @@ struct body {
     char    name[NAMELEN];
 };
 
+#define PLOT_POS    0x01
+#define PLOT_VEL    0x02
+#define PLOT_ACC    0x04
+#define PLOT_ORB    0x08
+
+struct plot {
+    struct body *sat;   //body to consider as satellite
+    struct body *ref;   //body to consider as center (ref)
+    uint32_t plots; //bitmap of coordinates to plot
+    uint32_t    nth; //skip steps
+    char name[256];
+    FILE *f;
+};
+
 struct state {
     struct body     *bodies;
     int             bcount;
@@ -23,6 +37,8 @@ struct state {
     double          tmax;   //max sim duration
     double          dt;     //time step
     unsigned long   steps;  //step count
+    struct plot     *plots;
+    int             pcount;
 };
 
 struct state sim;
@@ -33,6 +49,8 @@ struct state sim;
 int sim_init(struct state *dest) {
     dest->bodies = NULL;
     dest->bcount = 0;
+    dest->plots = NULL;
+    dest->pcount = 0;
     dest->tmax = 0;
     dest->dt = 0;
     return 0;
@@ -40,14 +58,29 @@ int sim_init(struct state *dest) {
 
 /*---------------------------------------------------------------------------*/
 int sim_end(struct state *dest) {
+    int p;
+    for(p=0;p<dest->pcount;p++) {
+        if(dest->plots[p].f) {
+            fclose(dest->plots[p].f);
+        }
+    }
+    free(dest->plots);
     free(dest->bodies);
     return 0;
 }
 
 /*---------------------------------------------------------------------------*/
 int sim_start(struct state *dest) {
+    int p;
     dest->t = 0;
     dest->steps = 0;
+    for(p=0;p<dest->pcount;p++) {
+        dest->plots[p].f = fopen(dest->plots[p].name,"wb");
+        if(!dest->plots[p].f) {
+            printf("failed to open plot%s\n", dest->plots[p].name);
+        }
+    }
+
     return 0;
 }
 
@@ -92,36 +125,61 @@ struct body *sim_body_find(struct state *dest, char *name) {
 }
 
 /*---------------------------------------------------------------------------*/
-int sim_run(struct state *s) {
-    uint32_t u,v;
-    double dx,dy,d2,d,f;
+int sim_plot_add(struct state *dest, char *file, struct body *sat, struct body *ref, uint32_t plots, uint32_t nth) {
+    dest->plots = realloc(dest->plots, sizeof(struct plot) * (dest->pcount+1));
+    if(dest->plots) {
+        memset(&dest->plots[dest->pcount], 0, sizeof(struct plot));
+        dest->plots[dest->pcount].sat   = sat;
+        dest->plots[dest->pcount].ref   = ref;
+        dest->plots[dest->pcount].plots = plots;
+        dest->plots[dest->pcount].nth   = nth;
+        strncpy(dest->plots[dest->pcount].name, file, 256);
+        dest->pcount += 1;
+        printf("sim: add plot file %s sat %s ref %s bits %08X\n",file,sat->name,ref->name,plots);
+        return 0;
+    }
+    return 1; //failed
+}
 
-    printf("[%lu] %g\n", s->steps, s->t);
+/*---------------------------------------------------------------------------*/
+int sim_run(struct state *s) {
+    uint32_t u,v;       //body indices
+    double dx,dy,d2,d;  //distance stuff
+    double f;           //force stuff
+    //local vars for speedup related to cache proximity
+    double ax,ay;       //accelerations
+    double rux,ruy;     //central body position
+    double um;          //central body mass
+
+    //memory locality speedups:
+    //load central body characteristics only once and not in inner iteration
 
     //compute forces on each body
     for(u = 0; u < s->bcount; u++) {
-        //printf("gravitational forces on body %d\n",u);
-        s->bodies[u].ax = 0;
-        s->bodies[u].ay = 0;
-
+        um = s->bodies[u].mass;
+        rux = s->bodies[u].rx;
+        ruy = s->bodies[u].ry;
+        ax = 0;
+        ay = 0;
         for(v = 0; v < s->bcount; v++) {
             if(v==u) continue;
-            dx = s->bodies[v].rx - s->bodies[u].rx;
-            dy = s->bodies[v].ry - s->bodies[u].ry;
+            dx = s->bodies[v].rx - rux;
+            dy = s->bodies[v].ry - ruy;
             d2 = dx*dx + dy*dy;
             d = sqrt(d2);
-            f  = G * s->bodies[u].mass * s->bodies[v].mass / d2;
+            f  = G * um * s->bodies[v].mass / d2;
             //direction from v to u (normalized vector)
             dx = dx / d;
             dy = dy / d;
-            //acceleration from v to u
-            dx = dx * f / s->bodies[u].mass;
-            dy = dy * f / s->bodies[u].mass;
-            //printf(" from body %d dist=%g m, f=%g N ax=%g ay=%g\n",v,d,f,dx,dy);
-            s->bodies[u].ax += dx;
-            s->bodies[u].ay += dy;
+            //accumulate acceleration from v to u
+            ax += dx * f / um;
+            ay += dy * f / um;
         }
+        //store central body acceleration only once
+        s->bodies[u].ax = ax;
+        s->bodies[u].ay = ay;
     }
+
     //integrate
     for(u = 0; u < s->bcount; u++) {
         s->bodies[u].vx += s->bodies[u].ax * s->dt;
@@ -144,10 +202,72 @@ int sim_run(struct state *s) {
         }
     }
 
-
     //do it
     s->t += s->dt;
     s->steps += 1;
+    return 0;
+}
+
+/*---------------------------------------------------------------------------*/
+int sim_plots(struct state *s) {
+    int p;
+    uint32_t pl;
+    double drx,dry,dvx,dvy,dax,day,mu;
+
+
+    for(p = 0; p<s->pcount; p++) {
+        if(s->steps % s->plots[p].nth) continue;
+
+        //printf("[%lu] %g ", s->steps, s->t - s->dt);
+        fprintf(s->plots[p].f, "%g ", s->t);
+
+        drx = s->plots[p].sat->rx - s->plots[p].ref->rx;
+        dry = s->plots[p].sat->ry - s->plots[p].ref->ry;
+        dvx = s->plots[p].sat->vx - s->plots[p].ref->vx;
+        dvy = s->plots[p].sat->vy - s->plots[p].ref->vy;
+        dax = s->plots[p].sat->ax - s->plots[p].ref->ax;
+        day = s->plots[p].sat->ay - s->plots[p].ref->ay;
+        mu = G * s->plots[p].ref->mass;
+        pl=s->plots[p].plots;
+        if(pl & PLOT_POS) {
+            fprintf(s->plots[p].f, "%g %g ",drx,dry);
+        }
+        if(pl & PLOT_VEL) {
+            fprintf(s->plots[p].f, "%g %g ",dvx,dvy);
+        }
+        if(pl & PLOT_ACC) {
+            fprintf(s->plots[p].f, "%g %g ",dax,day);
+        }
+        if(pl & PLOT_ORB) {
+            double d2,d,v2,v,h,ex,ey,e,a;
+
+            //determine orbital parameters from state vector
+            //https://downloads.rene-schwarz.com/download/M002-Cartesian_State_Vectors_to_Keplerian_Orbit_Elements.pdf
+
+            //distance of sat to central body
+            d2 = drx*drx + dry*dry;
+            d = sqrt(d2);
+
+            //orbital velocity
+            v2 = dvx*dvx + dvy*dvy;
+            v = sqrt(v2);
+
+            //orbital momentum r = R cross V -> 2D means this is a single value along Z
+            h = drx * dvy - dry * dvx;
+
+            //eccentricity vector
+            ex = ( dvy * h / mu) - drx / d;
+            ey = (-dvx * h / mu) - dry / d;
+            e = sqrt(ex * ex + ey * ey);
+
+            //semimajor axis
+            a = 1 / ((2/d)-(v2/mu));
+
+            fprintf(s->plots[p].f, "%g %g %g %g ", d, v, e, a);
+        }
+        fprintf(s->plots[p].f, "\n");
+
+    }
     return 0;
 }
 
@@ -197,7 +317,7 @@ int parse_planet(struct state *dest, char *buf) {
 }
 
 /*---------------------------------------------------------------------------*/
-//[ship] name mass radius [around] planet alt angle
+//[ship] name mass radius [around] planet alt angle orbspeed
 int parse_ship(struct state *dest, char *buf) {
     double m,r;
     char *ship,*name,*ebuf;
@@ -260,7 +380,7 @@ int parse_ship(struct state *dest, char *buf) {
 
     if(!strcmp(name,"around")) {
         struct body *ref,*bship;
-        double rad;
+        double rad,spd;
         if(!*buf) {
             printf("missing body around to position");
             return 1;
@@ -300,10 +420,24 @@ int parse_ship(struct state *dest, char *buf) {
         while(*buf && *buf==0x20) {
             buf += 1;
         }
+        if(!*buf) {
+            printf("missing orbital speed\n");
+            return 1;
+        }
+        printf("at mean anomaly %g\n",r);
+        spd = strtod(buf,&ebuf);
+        buf = ebuf;
+        while(*buf && *buf==0x20) {
+            buf += 1;
+        }
+        printf("orbital velo %g\n",spd);
         bship = sim_body_find(dest,ship);
         bship->rx = ref->rx + rad * cos(r * M_PI / 180);
         bship->ry = ref->ry + rad * sin(r * M_PI / 180);
         printf("ship pos x=%g, y=%g\n",bship->rx, bship->ry);
+        bship->vx = ref->vx + spd * cos((r+90) * M_PI / 180);
+        bship->vy = ref->vy + spd * sin((r+90) * M_PI / 180);
+        printf("ship vel x=%g, y=%g\n",bship->vx, bship->vy);
     }
 
     if(*buf) {
@@ -346,10 +480,121 @@ int parse_sim(struct state *dest, char *buf) {
 }
 
 /*---------------------------------------------------------------------------*/
-//[plot] body param ref
+//[plot] body ref param ... [pos,vel,acc,orb]
 int parse_plot(struct state *dest, char *buf) {
+    char *out, *sat, *ref, *par, *ebuf;
+    struct body *bsat,*bref;
+    uint32_t bits;
+    unsigned long nth;
+
     printf("PLOT =>%s\n",buf);
-    return 0;
+
+    if(!*buf) {
+        printf("missing sat name\n");
+        return 1;
+    }
+    //find out end
+    out = buf;
+    while(*buf && *buf !=0x20) {
+        buf += 1;
+    }
+    ebuf = buf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    *ebuf = 0;
+    printf("out %s\n",sat);
+    if(!*buf) {
+        printf("missing sat name\n");
+        return 1;
+    }
+
+    //find sat end
+    sat = buf;
+    while(*buf && *buf !=0x20) {
+        buf += 1;
+    }
+    ebuf = buf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    *ebuf = 0;
+    printf("sat %s\n",sat);
+    if(!*buf) {
+        printf("missing ref name\n");
+        return 1;
+    }
+
+    //find ref
+    ref = buf;
+    //find ref end
+    while(*buf && *buf !=0x20) {
+        buf += 1;
+    }
+    ebuf = buf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    if(!*buf) {
+        printf("no nth step\n");
+        return 1;
+    }
+    *ebuf = 0;
+    printf("ref %s\n",ref);
+
+    //parse nthstep
+    nth=strtol(buf,&ebuf,10);
+    buf = ebuf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    printf("every nth %lu\n",nth);
+    if(!*buf) {
+        printf("no params\n");
+        return 1;
+    }
+    printf("params %s\n",buf);
+
+    bsat = sim_body_find(dest,sat);
+    if(!bsat) {
+        printf("satellite %s not found\n", sat);
+        return 1;
+    }
+
+    bref = sim_body_find(dest,ref);
+    if(!bref) {
+        printf("reference body %s not found\n", ref);
+        return 1;
+    }
+    bits = 0;
+
+loop:
+    par = buf;
+    //find par end
+    while(*buf && *buf !=0x20) {
+        buf += 1;
+    }
+    ebuf = buf;
+    while(*buf && *buf==0x20) {
+        buf += 1;
+    }
+    *ebuf = 0;
+    printf("par -> %s\n",par);
+    if(!strcmp(par,"pos")) {
+        bits |= PLOT_POS;
+    } else if(!strcmp(par,"vel")) {
+        bits |= PLOT_VEL;
+    } else if(!strcmp(par,"acc")) {
+        bits |= PLOT_ACC;
+    } else if(!strcmp(par,"orb")) {
+        bits |= PLOT_ORB;
+    } else {
+        printf("unknown param %s\n",par);
+    }
+    if(*buf) {
+        goto loop;
+    }
+    return sim_plot_add(dest,out,bsat,bref,bits,nth);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -455,108 +700,10 @@ int main(int argc, char **argv) {
     sim_start(&sim);
     while(!sim_done(&sim)) {
         sim_run(&sim);
+        sim_plots(&sim);
     }
     sim_end(&sim);
     printf("simulation done\n");
     return 0;
 }
-
-#if 0
-int sim() {
-    double t=0;
-    unsigned long i = 0;
-
-    double d2,d,f,dx,dy,vx,vy,h,ex,ey,mu,e,a,s2,s;
-    int nbodies = 2;
-
-    int u,v;
-
-    memcpy(&bodies[central], &earth, sizeof(struct body));
-    memcpy(&bodies[sat]    , &iss  , sizeof(struct body));
-    
-    mu = G * bodies[central].mass;
-
-again:
-    //printf("i=%lu t=%g\n",i,t);
-    //compute forces on each body
-    for(u = 0; u < nbodies; u++) {
-        //printf("gravitational forces on body %d\n",u);
-        bodies[u].accel_x = 0;
-        bodies[u].accel_y = 0;
-
-        for(v = 0; v < nbodies; v++) {
-            if(v==u) continue;
-            dx = bodies[v].pos_x - bodies[u].pos_x;
-            dy = bodies[v].pos_y - bodies[u].pos_y;
-            d2 = dx*dx + dy*dy;
-            d = sqrt(d2);
-            f  = G * bodies[u].mass * bodies[v].mass / d2;
-            //direction from v to u (normalized vector)
-            dx = dx / d;
-            dy = dy / d;
-            //acceleration from v to u
-            dx = dx * f / bodies[u].mass;
-            dy = dy * f / bodies[u].mass;
-            //printf(" from body %d dist=%g m, f=%g N ax=%g ay=%g\n",v,d,f,dx,dy);
-            bodies[u].accel_x += dx;
-            bodies[u].accel_y += dy;
-        }
-    }
-    //integrate
-    for(u = 0; u < nbodies; u++) {
-        bodies[u].speed_x += bodies[u].accel_x * dt;
-        bodies[u].speed_y += bodies[u].accel_y * dt;
-        bodies[u].pos_x   += bodies[u].speed_x * dt;
-        bodies[u].pos_y   += bodies[u].speed_y * dt;
-    }
-
-    //detect collisions
-    for(u = 0; u < nbodies; u++) {
-        for(v = u+1; v < nbodies; v++) {
-            dx = bodies[v].pos_x - bodies[u].pos_x;
-            dy = bodies[v].pos_y - bodies[u].pos_y;
-            d2 = dx*dx + dy*dy;
-            d = sqrt(d2);
-            if(d < (bodies[u].radius + bodies[v].radius)) {
-                printf("collision!\n");
-                t = time;
-            }
-        }
-    }
-
-    //compute orbital parameters
-    //https://downloads.rene-schwarz.com/download/M002-Cartesian_State_Vectors_to_Keplerian_Orbit_Elements.pdf
-
-    //distance of sat to central body
-    dx = bodies[sat].pos_x - bodies[central].pos_x;
-    dy = bodies[sat].pos_y - bodies[central].pos_y;
-    d2 = dx*dx + dy*dy;
-    d = sqrt(d2);
-
-    //orbital speed
-    vx = bodies[sat].speed_x - bodies[central].speed_x;
-    vy = bodies[sat].speed_y - bodies[central].speed_y;
-    s2 = vx*vx + vy*vy;
-    s = sqrt(s2);
-
-    //orbital momentum r = R cross V -> 2D means this is a single value along Z
-    h = dx * vy - dy * vx;
-
-    //eccentricity vector
-    ex = ( vy * h / mu) - dx / d;
-    ey = (-vx * h / mu) - dy / d;
-    e = sqrt(ex * ex + ey * ey);
-
-    //semimajor axis
-    a = 1 / ((2/d)-(s2/mu));
-
-    if(!(i%10)) printf("%g %g %g %g %g\n", bodies[sat].pos_x, bodies[sat].pos_y, e, a, s);
-
-    //iterate
-    t = t + dt;
-    i = i + 1;
-    if(t < time) goto again;
-    
-}
-#endif
 
